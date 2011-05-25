@@ -30,46 +30,63 @@ or implied, of Zeev Tarantov.
  *  -g -o guess_charset guess_charset.c
  */
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <fcntl.h>
 
-#define CHECK_N_BYTES(n) \
-  do {                                          \
-    for (i = 0; i < n; i++) {                   \
-      if ((c = getc_unlocked(ifile)) == EOF)    \
-        goto out;                               \
-      if (c < 0x80 || c >= 0xC0) {              \
-        valid_utf8 = 0;                         \
-        goto out;                               \
-      }                                         \
-    }                                           \
+#define likely(x)       __builtin_expect((x),1)
+#define unlikely(x)     __builtin_expect((x),0)
+
+#define get_unaligned64(x)      (*(const uint64_t *)(x))
+
+enum encoding {
+  ASCII,
+  UTF8,
+  UNKNOWN
+};
+
+#define CHECK_N_BYTES(n)                \
+  do {                                  \
+    for (i = 0; i < n; i++) {           \
+      if (unlikely(curr == end))        \
+        goto out;                       \
+      c = *curr++;                      \
+      if ((c < 0x80) || (c >= 0xC0))    \
+        return UNKNOWN;                 \
+    }                                   \
   } while(0)
 
-int main(int argc, char* argv[])
+static enum encoding is_valid_utf8(
+  const unsigned char *curr,
+  const unsigned char * const end)
 {
-  FILE *ifile;
-  int all_7bit = 1, valid_utf8 = 1, c, i;
-  if (argc < 2) {
-    fprintf(stderr, "Usage: one file name argument or '-' for stdin.\n");
-    return 1;
-  }
-  if (strcmp("-", argv[1]) == 0) {
-    ifile = stdin;
-  } else {
-    if (!(ifile = fopen(argv[1], "rb"))) {
-      fprintf(stderr, "Could not open file %s for input.\n", argv[1]);
-      return 1;
-    }
-  }
+  int all_7bit = 1, c, i;
   for (;;) {
-    if ((c = getc_unlocked(ifile)) == EOF)
-      goto out;
-    if (c < 0x80)
-      continue;
+    /* skip 8 bytes at a time, provided they all have the MSB off */
+    while (likely(curr <= end - 8)) {
+      uint64_t v = get_unaligned64(curr);
+      if ((v & 0x8080808080808080UL) == 0)
+        curr += 8;
+      else
+        goto find_byte_with_msb_on;
+    }
+    /* skip one byte at a time, if it has MSB off */
+    for (;;) {
+      if (unlikely(curr == end))
+        goto out;
+find_byte_with_msb_on:
+      c = *curr++;
+      if (c >= 0x80)
+        break;
+    }
     all_7bit = 0;
     if (c < 0xC0) {
-      valid_utf8 = 0;
-      goto out;
+      return UNKNOWN;
     } else if (c <= 0xDF) {
       CHECK_N_BYTES(1);
     } else if (c <= 0xEF) {
@@ -81,14 +98,41 @@ int main(int argc, char* argv[])
        * Four byte UTF-8 sequences allows to encode U+10FFFF.
        * Higher code points are not allowed in Unicode.
        */
-      valid_utf8 = 0;
-      goto out;
+      return UNKNOWN;
     }
   }
 out:
-  if (all_7bit)
+  return all_7bit ? ASCII : UTF8;
+}
+
+int main(int argc, char* argv[])
+{
+  struct stat st;
+  int fd;
+  unsigned char *base;
+  enum encoding result;
+  if (argc < 2) {
+    fprintf(stderr, "Usage: one file name argument.\n");
+    return 1;
+  }
+  fd = open(argv[1], O_RDONLY);
+  if (fd == -1) {
+    fprintf(stderr, "Could not open file %s for input.\n", argv[1]);
+    return 1;
+  }
+  if (fstat(fd, &st)) {
+    fprintf(stderr, "Could not stat file %s for input.\n", argv[1]);
+    return 1;
+  }
+  if ((base = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0)) == MAP_FAILED) {
+    fprintf(stderr, "Could not mmap file %s for input.\n", argv[1]);
+    return 1;
+  }
+  result = is_valid_utf8(base, base + st.st_size);
+  munmap(base, st.st_size);
+  if (result == ASCII)
     printf("ASCII\n");
-  else if (valid_utf8)
+  else if (result == UTF8)
     printf("UTF-8\n");
   else
     printf("Probably Latin-1\n");
