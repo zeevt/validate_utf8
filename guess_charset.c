@@ -38,7 +38,7 @@ or implied, of Zeev Tarantov.
     for (i = 0; i < n; i++) {                   \
       if ((c = getc_unlocked(ifile)) == EOF)    \
         goto out;                               \
-      if (c < 0x80) {                           \
+      if (c < 0x80 || c >= 0xC0) {              \
         valid_utf8 = 0;                         \
         goto out;                               \
       }                                         \
