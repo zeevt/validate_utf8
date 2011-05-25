@@ -66,24 +66,28 @@ static enum encoding is_valid_utf8(
   const unsigned char * const end)
 {
   int all_7bit = 1, c, i;
+  uint64_t v;
   for (;;) {
     /* skip 8 bytes at a time, provided they all have the MSB off */
     while (likely(curr <= end - 8)) {
-      uint64_t v = get_unaligned64(curr);
-      if ((v & 0x8080808080808080UL) == 0)
+      v = get_unaligned64(curr) & 0x8080808080808080UL;
+      if (v == 0) {
         curr += 8;
-      else
-        goto find_byte_with_msb_on;
+      } else {
+        curr += (__builtin_ffsl(v) >> 3) - 1;
+        c = *curr++;
+        goto utf8_payload;
+      }
     }
     /* skip one byte at a time, if it has MSB off */
     for (;;) {
       if (unlikely(curr == end))
         goto out;
-find_byte_with_msb_on:
       c = *curr++;
       if (c >= 0x80)
         break;
     }
+utf8_payload:
     all_7bit = 0;
     if (c < 0xC0) {
       return UNKNOWN;
