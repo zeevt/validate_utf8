@@ -82,32 +82,32 @@ static enum encoding is_valid_utf8(
   int all_7bit = 1, c, i;
   REGSIZE_TYPE v;
   for (;;) {
-byte_search:
-    /* skip one byte at a time, if it has MSB off */
-    if (likely(curr <= end - BYTE_LOOP_UNROLL)) {
-      NEXT_BYTE IS_ASCII
-      NEXT_BYTE IS_ASCII
-      NEXT_BYTE IS_ASCII
-      NEXT_BYTE IS_ASCII
-    } else {
-      for (i = BYTE_LOOP_UNROLL; i; i--) {
-        if (unlikely(curr == end))
-          goto out;
+    for (;;) {
+      /* skip one byte at a time, if it has MSB off */
+      if (likely(curr <= end - BYTE_LOOP_UNROLL)) {
         NEXT_BYTE IS_ASCII
-      }
-    }
-    /* skip sizeof(v) bytes at a time, provided they all have the MSB off */
-    while (likely(curr <= end - sizeof(v))) {
-      v = get_unaligned_reg(curr) & MSB_MASK;
-      if (v == 0) {
-        curr += sizeof(v);
+        NEXT_BYTE IS_ASCII
+        NEXT_BYTE IS_ASCII
+        NEXT_BYTE IS_ASCII
       } else {
-        curr += (bitscan_le(v) >> 3) - 1;
-        c = *curr++;
-        goto utf8_payload;
+        for (i = BYTE_LOOP_UNROLL; i; i--) {
+          if (unlikely(curr == end))
+            goto out;
+          NEXT_BYTE IS_ASCII
+        }
+      }
+      /* skip sizeof(v) bytes at a time, provided they all have the MSB off */
+      while (likely(curr <= end - sizeof(v))) {
+        v = get_unaligned_reg(curr) & MSB_MASK;
+        if (v == 0) {
+          curr += sizeof(v);
+        } else {
+          curr += (bitscan_le(v) >> 3) - 1;
+          c = *curr++;
+          goto utf8_payload;
+        }
       }
     }
-    goto byte_search;
 utf8_payload:
     all_7bit = 0;
     if (unlikely(c < 0xC0)) {
