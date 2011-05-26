@@ -42,9 +42,19 @@ or implied, of Zeev Tarantov.
 #define likely(x)       __builtin_expect((x),1)
 #define unlikely(x)     __builtin_expect((x),0)
 
-#define MIN(a,b)        (((a)<(b))?(a):(b))
-
-#define get_unaligned64(x)      (*(const uint64_t *)(x))
+#if defined(__x86_64__)
+#  define REGSIZE_TYPE                  uint64_t
+#  define MSB_MASK                      0x8080808080808080UL
+#  define get_unaligned_reg(p)          (*(const uint64_t *)(p))
+#  define bitscan_le(v)                 (__builtin_ffsl(v))
+#elif defined(__i386__)
+#  define REGSIZE_TYPE                  uint32_t
+#  define MSB_MASK                      0x80808080U
+#  define get_unaligned_reg(p)          (*(const uint32_t *)(p))
+#  define bitscan_le(v)                 (__builtin_ffs(v))
+#else
+#  error Only x86 and x86-64 are currently supported.
+#endif
 
 enum encoding {
   ASCII,
@@ -53,7 +63,6 @@ enum encoding {
 };
 
 #define BYTE_LOOP_UNROLL        4
-#define REGSIZE_BYTES           8
 
 #define NEXT_BYTE               \
   c = *curr++;
@@ -71,7 +80,7 @@ static enum encoding is_valid_utf8(
   const unsigned char * const end)
 {
   int all_7bit = 1, c, i;
-  uint64_t v;
+  REGSIZE_TYPE v;
   for (;;) {
 byte_search:
     /* skip one byte at a time, if it has MSB off */
@@ -87,13 +96,13 @@ byte_search:
         NEXT_BYTE IS_ASCII
       }
     }
-    /* skip REGSIZE_BYTES bytes at a time, provided they all have the MSB off */
-    while (likely(curr <= end - REGSIZE_BYTES)) {
-      v = get_unaligned64(curr) & 0x8080808080808080UL;
+    /* skip sizeof(v) bytes at a time, provided they all have the MSB off */
+    while (likely(curr <= end - sizeof(v))) {
+      v = get_unaligned_reg(curr) & MSB_MASK;
       if (v == 0) {
-        curr += REGSIZE_BYTES;
+        curr += sizeof(v);
       } else {
-        curr += (__builtin_ffsl(v) >> 3) - 1;
+        curr += (bitscan_le(v) >> 3) - 1;
         c = *curr++;
         goto utf8_payload;
       }
