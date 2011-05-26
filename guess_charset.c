@@ -32,7 +32,6 @@ or implied, of Zeev Tarantov.
 
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
