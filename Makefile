@@ -17,14 +17,19 @@ test: guess_charset
 	./guess_charset ~/Downloads/UTF-8-demo.txt
 
 profile: test
-	$(PERF) record -F 10000 ./guess_charset testdata
+	$(PERF) record -F 10000 ./guess_charset testdata_utf8
 	$(PERF) report
 	$(PERF) annotate -l
+
+benchmark: guess_charset
+	$(PERF) stat ./guess_charset testdata_ascii
+	$(PERF) stat ./guess_charset testdata_utf8
 
 guess_charset_pgo: guess_charset.c
 	$(MAKE) clean
 	$(MAKE) PGO_GEN=yes guess_charset
-	./guess_charset testdata
+	./guess_charset testdata_ascii
+	./guess_charset testdata_utf8
 	$(MAKE) clean
 	$(MAKE) PGO_USE=yes guess_charset
 

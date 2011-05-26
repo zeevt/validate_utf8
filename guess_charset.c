@@ -42,6 +42,8 @@ or implied, of Zeev Tarantov.
 #define likely(x)       __builtin_expect((x),1)
 #define unlikely(x)     __builtin_expect((x),0)
 
+#define MIN(a,b)        (((a)<(b))?(a):(b))
+
 #define get_unaligned64(x)      (*(const uint64_t *)(x))
 
 enum encoding {
@@ -50,16 +52,19 @@ enum encoding {
   UNKNOWN
 };
 
-#define CHECK_N_BYTES(n)                \
-  do {                                  \
-    for (i = 0; i < n; i++) {           \
-      if (unlikely(curr == end))        \
-        goto out;                       \
-      c = *curr++;                      \
-      if ((c < 0x80) || (c >= 0xC0))    \
-        return UNKNOWN;                 \
-    }                                   \
-  } while(0)
+#define BYTE_LOOP_UNROLL        4
+#define REGSIZE_BYTES           8
+
+#define NEXT_BYTE               \
+  c = *curr++;
+
+#define IS_ASCII                \
+  if (c >= 0x80)                \
+    goto utf8_payload;
+
+#define IS_PAYLOAD                              \
+  if (unlikely((c < 0x80) || (c >= 0xC0)))      \
+    return UNKNOWN;
 
 static enum encoding is_valid_utf8(
   const unsigned char *curr,
@@ -68,42 +73,56 @@ static enum encoding is_valid_utf8(
   int all_7bit = 1, c, i;
   uint64_t v;
   for (;;) {
-    /* skip 8 bytes at a time, provided they all have the MSB off */
-    while (likely(curr <= end - 8)) {
+byte_search:
+    /* skip one byte at a time, if it has MSB off */
+    if (likely(curr <= end - BYTE_LOOP_UNROLL)) {
+      NEXT_BYTE IS_ASCII
+      NEXT_BYTE IS_ASCII
+      NEXT_BYTE IS_ASCII
+      NEXT_BYTE IS_ASCII
+    } else {
+      for (i = BYTE_LOOP_UNROLL; i; i--) {
+        if (unlikely(curr == end))
+          goto out;
+        NEXT_BYTE IS_ASCII
+      }
+    }
+    /* skip REGSIZE_BYTES bytes at a time, provided they all have the MSB off */
+    while (likely(curr <= end - REGSIZE_BYTES)) {
       v = get_unaligned64(curr) & 0x8080808080808080UL;
       if (v == 0) {
-        curr += 8;
+        curr += REGSIZE_BYTES;
       } else {
         curr += (__builtin_ffsl(v) >> 3) - 1;
         c = *curr++;
         goto utf8_payload;
       }
     }
-    /* skip one byte at a time, if it has MSB off */
-    for (;;) {
-      if (unlikely(curr == end))
-        goto out;
-      c = *curr++;
-      if (c >= 0x80)
-        break;
-    }
+    goto byte_search;
 utf8_payload:
     all_7bit = 0;
-    if (c < 0xC0) {
+    if (unlikely(c < 0xC0))
       return UNKNOWN;
-    } else if (c <= 0xDF) {
-      CHECK_N_BYTES(1);
-    } else if (c <= 0xEF) {
-      CHECK_N_BYTES(2);
-    } else if (c <= 0xF7) {
-      CHECK_N_BYTES(3);
-    } else {
-      /*
-       * Four byte UTF-8 sequences allows to encode U+10FFFF.
-       * Higher code points are not allowed in Unicode.
-       */
+    else if (c <= 0xDF)
+      goto check_1_byte;
+    else if (c <= 0xEF)
+      goto check_2_bytes;
+    else if (likely(c <= 0xF7))
+      goto check_3_bytes;
+    else
       return UNKNOWN;
-    }
+check_3_bytes:
+    if (unlikely(curr == end))
+      return UNKNOWN;
+    NEXT_BYTE IS_PAYLOAD
+check_2_bytes:
+    if (unlikely(curr == end))
+      return UNKNOWN;
+    NEXT_BYTE IS_PAYLOAD
+check_1_byte:
+    if (unlikely(curr == end))
+      return UNKNOWN;
+    NEXT_BYTE IS_PAYLOAD
   }
 out:
   return all_7bit ? ASCII : UTF8;
