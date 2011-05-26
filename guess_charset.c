@@ -73,11 +73,11 @@ enum encoding {
 
 #define IS_PAYLOAD                              \
   if (unlikely((c < 0x80) || (c >= 0xC0)))      \
-    return UNKNOWN;
+    goto bad;
 
 static enum encoding is_valid_utf8(
-  const unsigned char *curr,
-  const unsigned char * const end)
+  const uint8_t *curr,
+  const uint8_t * const end)
 {
   int all_7bit = 1, c, i;
   REGSIZE_TYPE v;
@@ -111,30 +111,37 @@ byte_search:
 utf8_payload:
     all_7bit = 0;
     if (unlikely(c < 0xC0))
-      return UNKNOWN;
+      goto bad;
     else if (c <= 0xDF)
       goto check_1_byte;
-    else if (c <= 0xEF)
+    else if (likely(c <= 0xEF))
       goto check_2_bytes;
     else if (likely(c <= 0xF7))
       goto check_3_bytes;
     else
-      return UNKNOWN;
+      goto bad;
 check_3_bytes:
-    if (unlikely(curr == end))
-      return UNKNOWN;
+    if (unlikely(curr > end - 3))
+      goto bad;
     NEXT_BYTE IS_PAYLOAD
+    NEXT_BYTE IS_PAYLOAD
+    NEXT_BYTE IS_PAYLOAD
+    goto byte_search;
 check_2_bytes:
-    if (unlikely(curr == end))
-      return UNKNOWN;
+    if (unlikely(curr > end - 2))
+      goto bad;
     NEXT_BYTE IS_PAYLOAD
+    NEXT_BYTE IS_PAYLOAD
+    goto byte_search;
 check_1_byte:
     if (unlikely(curr == end))
-      return UNKNOWN;
+      goto bad;
     NEXT_BYTE IS_PAYLOAD
   }
 out:
   return all_7bit ? ASCII : UTF8;
+bad:
+  return UNKNOWN;
 }
 
 int main(int argc, char* argv[])
@@ -143,20 +150,19 @@ int main(int argc, char* argv[])
   int fd;
   unsigned char *base;
   enum encoding result;
-  if (argc < 2) {
+  if (unlikely(argc < 2)) {
     fprintf(stderr, "Usage: one file name argument.\n");
     return 1;
   }
-  fd = open(argv[1], O_RDONLY);
-  if (fd == -1) {
+  if (unlikely((fd = open(argv[1], O_RDONLY)) == -1)) {
     fprintf(stderr, "Could not open file %s for input.\n", argv[1]);
     return 1;
   }
-  if (fstat(fd, &st)) {
+  if (unlikely(fstat(fd, &st))) {
     fprintf(stderr, "Could not stat file %s for input.\n", argv[1]);
     return 1;
   }
-  if ((base = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0)) == MAP_FAILED) {
+  if (unlikely((base = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0)) == MAP_FAILED)) {
     fprintf(stderr, "Could not mmap file %s for input.\n", argv[1]);
     return 1;
   }
