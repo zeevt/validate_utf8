@@ -110,33 +110,26 @@ byte_search:
     goto byte_search;
 utf8_payload:
     all_7bit = 0;
-    if (unlikely(c < 0xC0))
+    if (unlikely(c < 0xC0)) {
       goto bad;
-    else if (c <= 0xDF)
-      goto check_1_byte;
-    else if (likely(c <= 0xEF))
-      goto check_2_bytes;
-    else if (likely(c <= 0xF7))
-      goto check_3_bytes;
-    else
+    } else if (c <= 0xDF) {
+      if (unlikely(curr == end))
+        goto bad;
+      NEXT_BYTE IS_PAYLOAD
+    } else if (likely(c <= 0xEF)) {
+      if (unlikely(curr > end - 2))
+        goto bad;
+      NEXT_BYTE IS_PAYLOAD
+      NEXT_BYTE IS_PAYLOAD
+    } else if (likely(c <= 0xF7)) {
+      if (unlikely(curr > end - 3))
+        goto bad;
+      NEXT_BYTE IS_PAYLOAD
+      NEXT_BYTE IS_PAYLOAD
+      NEXT_BYTE IS_PAYLOAD
+    } else {
       goto bad;
-check_3_bytes:
-    if (unlikely(curr > end - 3))
-      goto bad;
-    NEXT_BYTE IS_PAYLOAD
-    NEXT_BYTE IS_PAYLOAD
-    NEXT_BYTE IS_PAYLOAD
-    goto byte_search;
-check_2_bytes:
-    if (unlikely(curr > end - 2))
-      goto bad;
-    NEXT_BYTE IS_PAYLOAD
-    NEXT_BYTE IS_PAYLOAD
-    goto byte_search;
-check_1_byte:
-    if (unlikely(curr == end))
-      goto bad;
-    NEXT_BYTE IS_PAYLOAD
+    }
   }
 out:
   return all_7bit ? ASCII : UTF8;
