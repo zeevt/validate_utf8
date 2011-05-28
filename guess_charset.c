@@ -26,7 +26,7 @@ authors and should not be interpreted as representing official policies, either 
 or implied, of Zeev Tarantov.
 */
 /*
- * Comile with: gcc -std=c89 -D_POSIX_C_SOURCE=1 -Wall -Wextra -pedantic -O2
+ * Comile with: gcc -std=gnu90 -Wall -Wextra -pedantic -O2
  *  -g -o guess_charset guess_charset.c
  */
 
@@ -37,134 +37,158 @@ or implied, of Zeev Tarantov.
 #include <sys/mman.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <ucontext.h>
 
 #define likely(x)       __builtin_expect((x),1)
 #define unlikely(x)     __builtin_expect((x),0)
 
 #if defined(__x86_64__)
-#  define REGSIZE_TYPE                  uint64_t
-#  define MSB_MASK                      0x8080808080808080UL
-#  define get_unaligned_reg(p)          (*(const uint64_t *)(p))
-#  define bitscan_le(v)                 (__builtin_ffsl(v))
+#  define REGSIZE_TYPE          uint64_t
+#  define MSB_MASK              0x8080808080808080UL
+#  define bitscan_le(v)         (__builtin_ffsl(v))
 #elif defined(__i386__)
-#  define REGSIZE_TYPE                  uint32_t
-#  define MSB_MASK                      0x80808080U
-#  define get_unaligned_reg(p)          (*(const uint32_t *)(p))
-#  define bitscan_le(v)                 (__builtin_ffs(v))
+#  define REGSIZE_TYPE          uint32_t
+#  define MSB_MASK              0x80808080U
+#  define bitscan_le(v)         (__builtin_ffs(v))
 #else
 #  error Only x86 and x86-64 are currently supported.
 #endif
+#define get_unaligned_reg(p)    (*(const REGSIZE_TYPE *)(p))
+#define get_unalined16(p)       (*(const uint16_t *)(p))
+#define PAGE_SHIFT              (12)
+#define PAGE_SIZE               (1 << PAGE_SHIFT)
 
-enum encoding {
-  ASCII,
-  UTF8,
-  UNKNOWN
-};
+static uint8_t *guard_start, *guard_end;
+static volatile int all_7bit;
 
-#define BYTE_LOOP_UNROLL        4
-
-#define NEXT_BYTE               \
-  c = *curr++;
-
-#define IS_ASCII                \
-  if (c >= 0x80)                \
-    goto utf8_payload;
-
-#define IS_PAYLOAD                              \
-  if (unlikely((c < 0x80) || (c >= 0xC0)))      \
-    goto bad;
-
-static enum encoding is_valid_utf8(
-  const uint8_t *curr,
-  const uint8_t * const end)
+static void __attribute__((noreturn)) is_valid_utf8(const uint8_t *curr)
 {
-  int all_7bit = 1, c, i;
+  static const void * const jump_table[] = {
+    &&bad, &&bad, &&bad, &&bad,
+    &&bad, &&bad, &&bad, &&bad,
+    &&one_byte, &&one_byte, &&one_byte, &&one_byte,
+    &&two_bytes, &&two_bytes, &&three_bytes, &&bad
+  };
+  int c;
   REGSIZE_TYPE v;
+  /* skip sizeof(v) bytes at a time, provided they all have the MSB off */
   for (;;) {
-    for (;;) {
-      /* skip one byte at a time, if it has MSB off */
-      if (likely(curr <= end - BYTE_LOOP_UNROLL)) {
-        NEXT_BYTE IS_ASCII
-        NEXT_BYTE IS_ASCII
-        NEXT_BYTE IS_ASCII
-        NEXT_BYTE IS_ASCII
-      } else {
-        for (i = BYTE_LOOP_UNROLL; i; i--) {
-          if (unlikely(curr == end))
-            goto out;
-          NEXT_BYTE IS_ASCII
-        }
-      }
-      /* skip sizeof(v) bytes at a time, provided they all have the MSB off */
-      while (likely(curr <= end - sizeof(v))) {
-        v = get_unaligned_reg(curr) & MSB_MASK;
-        if (v == 0) {
-          curr += sizeof(v);
-        } else {
-          curr += (bitscan_le(v) >> 3) - 1;
-          c = *curr++;
-          goto utf8_payload;
-        }
-      }
-    }
-utf8_payload:
-    all_7bit = 0;
-    if (unlikely(c < 0xC0)) {
-      goto bad;
-    } else if (c <= 0xDF) {
-      if (unlikely(curr == end))
-        goto bad;
-      NEXT_BYTE IS_PAYLOAD
-    } else if (likely(c <= 0xEF)) {
-      if (unlikely(curr > end - 2))
-        goto bad;
-      NEXT_BYTE IS_PAYLOAD
-      NEXT_BYTE IS_PAYLOAD
-    } else if (likely(c <= 0xF7)) {
-      if (unlikely(curr > end - 3))
-        goto bad;
-      NEXT_BYTE IS_PAYLOAD
-      NEXT_BYTE IS_PAYLOAD
-      NEXT_BYTE IS_PAYLOAD
+    v = get_unaligned_reg(curr) & MSB_MASK;
+    if (likely(v == 0)) {
+      curr += sizeof(v);
     } else {
-      goto bad;
+      curr += (bitscan_le(v) >> 3) - 1;
+      c = *curr++;
+      break;
     }
   }
-out:
-  return all_7bit ? ASCII : UTF8;
+  all_7bit = 0;
+  goto *jump_table[(c >> 3) & 15];
+three_bytes:
+  c = *curr++;
+  if (unlikely(c >> 6 != 2))
+    goto bad;
+two_bytes:
+  if (unlikely((get_unalined16(curr) & 0xC0C0) != 0x8080))
+    goto bad;
+  curr += 2;
+  c = *curr++;
+  if (unlikely(c < 128))
+    goto next_byte2;
+  goto *jump_table[(c >> 3) & 15];
+one_byte:
+  c = *curr++;
+  if (unlikely(c >> 6 != 2))
+    goto bad;
+  c = *curr++;
+  if (unlikely(c < 128))
+    goto next_byte2;
+  goto *jump_table[(c >> 3) & 15];
+next_byte2:
+  c = *curr++;
+  if (likely(c >= 128))
+    goto utf8_payload;
+  c = *curr++;
+  if (likely(c >= 128))
+    goto utf8_payload;
+  for (;;) {
+    v = get_unaligned_reg(curr) & MSB_MASK;
+    if (likely(v == 0)) {
+      curr += sizeof(v);
+    } else {
+      curr += (bitscan_le(v) >> 3) - 1;
+      c = *curr++;
+      break;
+    }
+  }
+utf8_payload:
+  goto *jump_table[(c >> 3) & 15];
 bad:
-  return UNKNOWN;
+  printf("Probably Latin-1\n");
+  exit(0);
+}
+
+/* TODO: switch from stdio to write(2) calls in sig handler */
+void handler(int cause, siginfo_t *info, void *uap)
+{
+  if (likely((uint8_t *)info->si_addr >= guard_start &&
+             (uint8_t *)info->si_addr < guard_end)) {
+    if (all_7bit)
+      printf("ASCII\n");
+    else
+      printf("UTF-8\n");
+    if (unlikely(mprotect(guard_start, guard_end - guard_start, PROT_READ | PROT_WRITE))) {
+      perror("mprotect");
+      exit(1);
+    }
+    exit(0);
+  } else {
+    fprintf(stderr, "Unexpected SIGSEGV @ %p\n", info->si_addr);
+    exit(1);
+  }
 }
 
 int main(int argc, char* argv[])
 {
   struct stat st;
+  size_t next_page;
   int fd;
   unsigned char *base;
-  enum encoding result;
+  struct sigaction sa;
+  sa.sa_sigaction = handler;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = SA_SIGINFO;
+  if (unlikely(sigaction(SIGSEGV, &sa, 0))) {
+    perror("sigaction");
+    return 1;
+  }
   if (unlikely(argc < 2)) {
     fprintf(stderr, "Usage: one file name argument.\n");
     return 1;
   }
   if (unlikely((fd = open(argv[1], O_RDONLY)) == -1)) {
-    fprintf(stderr, "Could not open file %s for input.\n", argv[1]);
+    perror("open");
     return 1;
   }
   if (unlikely(fstat(fd, &st))) {
-    fprintf(stderr, "Could not stat file %s for input.\n", argv[1]);
+    perror("fstat");
     return 1;
   }
-  if (unlikely((base = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0)) == MAP_FAILED)) {
+  next_page = ((st.st_size + PAGE_SIZE - 1) >> PAGE_SHIFT) << PAGE_SHIFT;
+  if (unlikely((base = mmap(NULL, next_page + PAGE_SIZE, PROT_READ, MAP_PRIVATE, fd, 0)) == MAP_FAILED)) {
     fprintf(stderr, "Could not mmap file %s for input.\n", argv[1]);
     return 1;
   }
-  result = is_valid_utf8(base, base + st.st_size);
-  munmap(base, st.st_size);
-  if (result == ASCII)
-    printf("ASCII\n");
-  else if (result == UTF8)
-    printf("UTF-8\n");
-  else
-    printf("Probably Latin-1\n");
-  return 0;
+  guard_start = base + next_page;
+  guard_end = base + next_page + PAGE_SIZE;
+  if (unlikely(mprotect(base + next_page, PAGE_SIZE, PROT_NONE))) {
+    perror("mprotect");
+    return 1;
+  }
+  all_7bit = 1;
+  is_valid_utf8(base);
+  fprintf(stderr, "Shouldn't reach here.\n");
+  return 1;
 }

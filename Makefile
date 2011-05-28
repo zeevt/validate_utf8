@@ -1,5 +1,12 @@
-CFLAGS := -std=c89 -D_POSIX_C_SOURCE=1 -Wall -Wextra -pedantic -O2 -g
-LDFLAGS := -Wl,-O1 -Wl,--as-needed -fwhole-program
+CFLAGS := -std=gnu89 -Wall -O2 -g
+LDFLAGS := -Wl,-O1 -Wl,--as-needed
+ifneq (${CC},icc)
+CFLAGS := $(CFLAGS) -Wextra -pedantic
+LDFLAGS := $(LDFLAGS) -fwhole-program
+endif
+ifeq (${CC},clang)
+CFLAGS := $(CFLAGS) -fomit-frame-pointer
+endif
 ifeq (${PGO_GEN},yes)
 CFLAGS := $(CFLAGS) -fprofile-generate
 endif
