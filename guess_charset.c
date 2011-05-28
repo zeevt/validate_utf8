@@ -26,11 +26,12 @@ authors and should not be interpreted as representing official policies, either 
 or implied, of Zeev Tarantov.
 */
 /*
- * Comile with: gcc -std=gnu90 -Wall -Wextra -pedantic -O2
+ * Comile with: gcc -std=gnu89 -Wall -Wextra -pedantic -O2
  *  -g -o guess_charset guess_charset.c
  */
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -38,8 +39,6 @@ or implied, of Zeev Tarantov.
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
-#include <stdlib.h>
-#include <ucontext.h>
 
 #define likely(x)       __builtin_expect((x),1)
 #define unlikely(x)     __builtin_expect((x),0)
@@ -56,7 +55,7 @@ or implied, of Zeev Tarantov.
 #  error Only x86 and x86-64 are currently supported.
 #endif
 #define get_unaligned_reg(p)    (*(const REGSIZE_TYPE *)(p))
-#define get_unalined16(p)       (*(const uint16_t *)(p))
+#define get_unaligned_16(p)     (*(const uint16_t *)(p))
 #define PAGE_SHIFT              (12)
 #define PAGE_SIZE               (1 << PAGE_SHIFT)
 
@@ -91,7 +90,7 @@ three_bytes:
   if (unlikely(c >> 6 != 2))
     goto bad;
 two_bytes:
-  if (unlikely((get_unalined16(curr) & 0xC0C0) != 0x8080))
+  if (unlikely((get_unaligned_16(curr) & 0xC0C0) != 0x8080))
     goto bad;
   curr += 2;
   c = *curr++;
